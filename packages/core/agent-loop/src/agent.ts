@@ -411,8 +411,18 @@ export class ReactLoopAgent implements Agent {
 
       const toolCalls = message.content.filter(block => block.type === 'tool-call')
       if (toolCalls.length === 0) return { kind: 'completed' }
+      // Fix BUG-006: Validate tool call name is not null/empty
+      // Gateway streaming explicit null id/name causes "unknown tool """ errors
+      const validToolCalls = toolCalls.filter(block => block.name && block.name.length > 0)
+      if (validToolCalls.length === 0) {
+        this.logger.warn(`agent/step: All ${toolCalls.length} tool call(s) have null/empty name, skipping execution`)
+        return { kind: 'completed' }
+      }
+      if (validToolCalls.length !== toolCalls.length) {
+        this.logger.warn(`agent/step: ${toolCalls.length - validToolCalls.length} tool call(s) filtered due to null/empty name`)
+      }
       const { concluded } = await executeToolCalls(
-        this.loopCtx, turn, step, toolCalls, signal,
+        this.loopCtx, turn, step, validToolCalls, signal,
         context => this.inbox.splice('next-step', this.inbox.nextStep.length, 0, [context]),
       )
       return concluded ? { kind: 'completed' } : null
