@@ -1,0 +1,6 @@
+{
+  "name": "@dsh/cap-terminal-persistent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Persistent terminal plugin"
+}

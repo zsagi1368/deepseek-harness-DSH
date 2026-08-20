@@ -1,0 +1,6 @@
+{
+  "name": "@dsh/core-session-coordination",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cross-session coordination plugin"
+}

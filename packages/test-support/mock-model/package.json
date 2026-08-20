@@ -1,0 +1,6 @@
+{
+  "name": "@dsh/test-support-mock-model",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Deterministic mock model plugin"
+}
