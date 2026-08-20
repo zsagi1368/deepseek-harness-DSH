@@ -705,6 +705,16 @@ export class Session {
   /** {@link SurfaceManager.replaceGeneration} the cache was built under. */
   private derivedGeneration = 0
 
+  /** Options for deriving messages with context window management. */
+  export interface DeriveMessagesOptions {
+    /** Maximum tokens to include. When exceeded, earliest turns are truncated. */
+    contextWindow?: number
+    /** Minimum number of complete turns to always retain. */
+    minTurns?: number
+    /** Token threshold at which early turns should be summarized. */
+    summaryThreshold?: number
+  }
+
   /**
    * Derive the LLM message history by walking the ordered sequences of
    * message-producing events maintained by `surfaceOp` markers. The
@@ -721,9 +731,15 @@ export class Session {
    * already holds); the `Message` objects in it are SHARED and **deep-frozen**.
    * Their content reuses the already frozen durable event data, so the cache
    * needs no second deep clone and consumers still cannot mutate the log.
+   *
+   * When `options.contextWindow` is provided, returns only the most recent
+   * messages that fit within the token budget, preserving at least
+   * `options.minTurns` complete turns.
+   *
+   * @param options - optional context window management parameters
    * @returns a fresh array of the shared, frozen derived history.
    */
-  deriveMessages(): Message[] {
+  deriveMessages(options?: DeriveMessagesOptions): Message[] {
     const surface = this.surface
     const nodes = surface.nodes
     const generation = surface.replaceGeneration
@@ -743,7 +759,88 @@ export class Session {
       if (msg) this.derived.push(msg)
     }
     this.derivedNodes = nodes.length
-    return [...this.derived]
+
+    // Apply context window management if requested
+    if (options?.contextWindow === undefined) {
+      return [...this.derived]
+    }
+
+    return this.applyContextWindow(this.derived, options)
+  }
+
+  /**
+   * Apply context window management to derived messages.
+   * Returns only messages fitting within the token budget.
+   */
+  private applyContextWindow(messages: Message[], options: DeriveMessagesOptions): Message[] {
+    const { contextWindow, minTurns = 2 } = options
+    if (contextWindow === undefined || contextWindow <= 0) {
+      return [...messages]
+    }
+
+    // Estimate tokens per message (rough approximation: 4 chars per token)
+    const estimateTokens = (msg: Message): number => {
+      if ('content' in msg) {
+        const content = msg.content
+        if (typeof content === 'string') return Math.ceil(content.length / 4)
+        if (Array.isArray(content)) {
+          return Math.ceil(content.reduce((sum, block) => {
+            if ('text' in block && block.text) return sum + Math.ceil(block.text.length / 4)
+            return sum
+          }, 0))
+        }
+      }
+      return 100 // rough default
+    }
+
+    // Count total tokens
+    let totalTokens = 0
+    for (const msg of messages) {
+      totalTokens += estimateTokens(msg)
+    }
+
+    // If under budget, return all messages
+    if (totalTokens <= contextWindow) {
+      return [...messages]
+    }
+
+    // Trim from the beginning, but respect minTurns
+    // Group messages into turns (user message + assistant response + tool calls)
+    const turns: Message[][] = []
+    let currentTurn: Message[] = []
+
+    for (const msg of messages) {
+      currentTurn.push(msg)
+      // A new turn starts with a user message
+      if ('role' in msg && msg.role === 'user') {
+        if (currentTurn.length > 1) {
+          turns.push(currentTurn)
+        }
+        currentTurn = [msg]
+      }
+    }
+    if (currentTurn.length > 0) {
+      turns.push(currentTurn)
+    }
+
+    // Keep at least minTurns complete turns from the end
+    const minTurnCount = Math.min(minTurns, turns.length)
+    const turnsToKeep = turns.slice(-minTurnCount)
+    let keptTokens = turnsToKeep.flat().reduce((sum, msg) => sum + estimateTokens(msg), 0)
+
+    // Add earlier turns until we hit the window
+    const result: Message[] = [...turnsToKeep.flat()]
+    for (let i = turns.length - minTurnCount - 1; i >= 0; i--) {
+      const turnTokens = turns[i].reduce((sum, msg) => sum + estimateTokens(msg), 0)
+      if (keptTokens + turnTokens <= contextWindow) {
+        result.unshift(...turns[i])
+        keptTokens += turnTokens
+      } else {
+        break
+      }
+    }
+
+    return result
   }
 
   /**

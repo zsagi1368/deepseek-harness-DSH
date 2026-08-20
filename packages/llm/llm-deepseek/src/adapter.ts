@@ -88,7 +88,8 @@ export interface DeepSeekAdapterOptions {
 /** Default maximum idle interval while an adapter stream read is outstanding. */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 /** Default combined request/response context capacity. */
-export const DEFAULT_CONTEXT_WINDOW = 1_000_000
+// Re-exported from @deepseek-ai/dsh-llm for a single source of truth.
+export { DEFAULT_CONTEXT_WINDOW } from '@deepseek-ai/dsh-llm'
 /** Default per-request output-token cap. */
 export const DEFAULT_MAX_TOKENS = 256_000
 const STREAM_IDLE_TIMEOUT_CODE = 'LLM_STREAM_IDLE_TIMEOUT'

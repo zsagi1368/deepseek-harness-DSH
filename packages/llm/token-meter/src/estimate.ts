@@ -12,6 +12,46 @@ import type { EpochHeader } from '@deepseek-ai/dsh-session'
 /** Fixed text-density estimate used until exact tokenization is needed. */
 const CHARS_PER_TOKEN = 4
 
+/**
+ * CJK (Chinese/Japanese/Korean) characters are roughly 1 char per token,
+ * not 4. We detect CJK ranges and apply a correction factor.
+ *
+ * Range U+4E00–U+9FFF: CJK Unified Ideographs
+ * Range U+3400–U+4DBF: CJK Extension A
+ * Range U+20000–U+2A6DF: CJK Extension B
+ * Range U+3040–U+30FF: Hiragana + Katakana
+ * Range U+AC00–U+D7AF: Hangul Syllables
+ */
+const CJK_REGEX = /[\u4E00-\u9FFF\u3400-\u4DBF\u20000-\u2A6DF\u3040-\u30FF\uAC00-\uD7AF]/
+
+function countCJKChars(text: string): number {
+  let count = 0
+  for (const ch of text) {
+    const code = ch.codePointAt(0)
+    if (code === undefined) continue
+    if (
+      (code >= 0x4E00 && code <= 0x9FFF) ||
+      (code >= 0x3400 && code <= 0x4DBF) ||
+      (code >= 0x20000 && code <= 0x2A6DF) ||
+      (code >= 0x3040 && code <= 0x30FF) ||
+      (code >= 0xAC00 && code <= 0xD7AF)
+    ) {
+      count++
+    }
+  }
+  return count
+}
+
+/**
+ * Estimate tokens for a text string with CJK-aware density.
+ * CJK characters use 1 char/token; Latin uses 4 chars/token.
+ */
+function estimateTextTokens(text: string): number {
+  const cjkCount = countCJKChars(text)
+  const latinCount = text.length - cjkCount
+  return cjkCount + Math.ceil(latinCount / CHARS_PER_TOKEN)
+}
+
 /** Per-block structural overhead for JSON framing and type tags. */
 const BLOCK_OVERHEAD = 4
 
@@ -29,11 +69,11 @@ export function estimateContent(blocks: readonly ContentBlock[]): number {
     switch (block.type) {
       case 'text':
       case 'reasoning':
-        tokens += Math.ceil(block.text.length / CHARS_PER_TOKEN) + BLOCK_OVERHEAD
+        tokens += estimateTextTokens(block.text) + BLOCK_OVERHEAD
         break
       case 'tool-call':
-        tokens += Math.ceil(block.name.length / CHARS_PER_TOKEN)
-          + Math.ceil(block.arguments.length / CHARS_PER_TOKEN)
+        tokens += estimateTextTokens(block.name)
+          + estimateTextTokens(block.arguments)
           + BLOCK_OVERHEAD
         break
       case 'tool-result':

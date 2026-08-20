@@ -223,6 +223,11 @@ export interface ToolDefinition extends ToolSchema {
   /** Mandatory canonical output declaration. */
   readonly output: ToolOutputDefinition
   /**
+   * Maximum result size in bytes. When set, results exceeding this limit
+   * are truncated with a [TRUNCATED] marker. Defaults to no limit.
+   */
+  readonly maxResultBytes?: number
+  /**
    * Run one accepted call and return only its canonical lossless-JSON value.
    * Async work must observe or forward `exec.signal` and settle only after its
    * owned work reaches quiescence. The registry preserves caller cancellation
@@ -233,6 +238,11 @@ export interface ToolDefinition extends ToolSchema {
    * @returns the canonical value declared by `output.schema`.
    */
   execute(args: unknown, exec: ToolRunContext): Promise<unknown>
+  /**
+   * Maximum concurrent executions for this tool. When set, the registry queues
+   * additional calls until a slot frees up. Defaults to no limit.
+   */
+  concurrencyLimit?: number
   /**
    * Synchronous last-mile transform for model-facing content. The registry
    * snapshots this callback when execution starts and invokes it exactly once
@@ -815,6 +825,10 @@ export class ToolRuntime extends Service {
   /** Presentation for scopes that declare none; {@link presentAs} shadows it per scope. */
   private readonly defaultMode: ToolPresentationMode
   private readonly maxParallelSubCalls: number
+  /** Concurrency tracking: tool name → count of active executions. */
+  private readonly activeConcurrency = new Map<string, number>()
+  /** Queued executions waiting for a concurrency slot. */
+  private readonly concurrencyQueue = new Map<string, Array<() => void>>()
   /**
    * Reserved presentation transport, kept outside the filterable registration
    * layers. Built on first need rather than at construction: which agents run
@@ -1567,6 +1581,29 @@ export class ToolRuntime extends Service {
    * @internal
    */
   private async dispatchScheduledExecution(exec: ToolRunContext): Promise<ScheduledToolDispatch> {
+    // Check and enforce concurrency limit if configured
+    const tool = this.registry.findTool(exec.name)
+    const limit = tool?.concurrencyLimit
+    if (limit !== undefined && limit > 0) {
+      const current = this.activeConcurrency.get(exec.name) ?? 0
+      if (current >= limit) {
+        // Queue this execution
+        await new Promise<void>(resolve => {
+          const queue = this.concurrencyQueue.get(exec.name) ?? []
+          queue.push(resolve)
+          this.concurrencyQueue.set(exec.name, queue)
+        })
+      }
+    }
+
+    // Increment active count
+    const tool2 = this.registry.findTool(exec.name)
+    const limit2 = tool2?.concurrencyLimit
+    if (limit2 !== undefined && limit2 > 0) {
+      const current = this.activeConcurrency.get(exec.name) ?? 0
+      this.activeConcurrency.set(exec.name, current + 1)
+    }
+
     try {
       const mutableExec = exec as MutableToolRunContext
       const carrier = scopeTarget(this, exec.agent)
@@ -1595,6 +1632,21 @@ export class ToolRuntime extends Service {
       }
     } catch (error: unknown) {
       return { kind: 'final-result', result: toolErrorResult(error) }
+    } finally {
+      // Decrement active count and release queued execution
+      if (limit2 !== undefined && limit2 > 0) {
+        const current = this.activeConcurrency.get(exec.name) ?? 1
+        const next = Math.max(0, current - 1)
+        this.activeConcurrency.set(exec.name, next)
+        const queue = this.concurrencyQueue.get(exec.name)
+        if (queue && queue.length > 0) {
+          const nextResolve = queue.shift()!
+          this.concurrencyQueue.set(exec.name, queue)
+          nextResolve()
+        } else if (next === 0) {
+          this.concurrencyQueue.delete(exec.name)
+        }
+      }
     }
   }
 
@@ -1845,6 +1897,27 @@ export class ToolRuntime extends Service {
 
   /** Materialize the authoritative commit outcome once, immediately before `tools/result`. */
   private materializeFinalResult(result: ToolExecutionResult): ToolExecutionResult {
+    // Apply maxResultBytes truncation if configured
+    const tool = this.registry.findTool(result.toolName)
+    if (tool && tool.maxResultBytes !== undefined && result.content) {
+      let totalBytes = 0
+      const truncatedContent: ContentBlock[] = []
+      for (const block of result.content) {
+        const blockBytes = typeof block === 'object' && block !== null && 'text' in block
+          ? new TextEncoder().encode((block as { text: string }).text).length
+          : 100 // rough estimate
+        if (totalBytes + blockBytes > tool.maxResultBytes && truncatedContent.length > 0) {
+          truncatedContent.push({ type: 'text', text: `\n\n[TRUNCATED: output exceeds ${tool.maxResultBytes} bytes limit]` })
+          break
+        }
+        truncatedContent.push(block)
+        totalBytes += blockBytes
+      }
+      if (truncatedContent.length < result.content.length) {
+        result = { ...result, content: truncatedContent }
+      }
+    }
+
     const presentation = {
       content: result.content,
       ...result.meta !== undefined ? { meta: result.meta } : {},

@@ -84,10 +84,9 @@ function walk(node: SchemaNode | undefined, value: unknown, path: string[], secr
       return value.map((entry, index) => walk(node.inner, entry, [...path, String(index)], secrets))
     }
     default:
-      // TODO(settings-wire-redaction): Fail closed instead — a secret reachable
-      // only through a union, intersection, or transform is returned verbatim
-      // here, with nothing recording that it was missed.
-      return value
+      // FIXED: Fail closed — return placeholder instead of leaking secrets
+      // through union, intersection, or transform branches
+      return '[REDACTED]' as unknown as ReturnType<typeof walk>
   }
 }
 
