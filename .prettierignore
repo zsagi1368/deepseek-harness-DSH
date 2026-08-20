@@ -1,0 +1,11 @@
+{
+  "extends": "./.prettierrc",
+  "overrides": [
+    {
+      "files": "*.md",
+      "options": {
+        "printWidth": 80
+      }
+    }
+  ]
+}
