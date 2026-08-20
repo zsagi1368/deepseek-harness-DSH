@@ -27,7 +27,8 @@ interface PartialBlock {
  * {@link ContentBlock}s and a final assistant {@link Message}.
  *
  * The agent loop feeds it while logging raw chunks for replay fidelity, then
- * reads `blocks()` / `message()` / `usage` / `finish` once the stream ends.
+ * reads `blocks()` / `message()` / `usage` / `finish` once the stream ends,
+ * or `interruptedBlocks()` when cancellation cut the stream short.
  *
  * Tolerant of delta-only protocols (no block-start/end); deltas arriving for
  * an index already closed by `block-end` are ignored (malformed stream) so a
@@ -129,45 +130,21 @@ export class BlockAssembler {
    * The one shared keep/drop decision over all seen blocks: max-token
    * truncation drops tool calls that cannot be executed safely. Emitted blocks
    * and replay metadata both derive from this result, so they cannot disagree.
-   *
-   * DSH-001 fix (v0.1.0-rc.10): When max-tokens truncates, the LAST tool-call
-   * block is now preserved as a partial block with a truncation marker. This
-   * prevents the "has intent but cannot execute" dead loop where the agent
-   * repeatedly produces a tool-call that gets silently dropped by the LLM.
-   * The preserved tool-call appears in `blocks()` and `truncatedToolCalls`.
    */
-  private assembled(): {
-    blocks: ContentBlock[]
-    replay: ReplayEnvelope | undefined
-    truncatedToolCalls: ContentBlock[]
-  } {
+  private assembled(): { blocks: ContentBlock[]; replay: ReplayEnvelope | undefined } {
     const all = this.order.map(index => this.assemble(this.mustGet(index), index))
-    const isMaxTokens = this.finish.kind === 'max-tokens'
-    const droppedAll = isMaxTokens ? all.map(block => block.type !== 'tool-call') : undefined
-    let blocks = droppedAll === undefined ? all : all.filter((_, position) => droppedAll[position])
-    let truncatedToolCalls: ContentBlock[] = []
-
-    if (isMaxTokens) {
-      // Find the last tool-call block (if any) and preserve it with a truncation marker.
-      const lastToolCallIndex = [...blocks].reverse().findIndex(b => b.type === 'tool-call')
-      if (lastToolCallIndex >= 0) {
-        const toolCallIdx = blocks.length - 1 - lastToolCallIndex
-        const toolCall = blocks[toolCallIdx]
-        truncatedToolCalls = [toolCall]
-        // Remove the last tool-call from the dropped set so it re-enters blocks
-        blocks = [...blocks.slice(0, toolCallIdx), ...blocks.slice(toolCallIdx + 1)]
-      }
-    }
-
+    const kept = this.finish.kind === 'max-tokens'
+      ? all.map(block => block.type !== 'tool-call')
+      : undefined
+    const blocks = kept === undefined ? all : all.filter((_, position) => kept[position])
     const envelope = this._replayState
-    if (envelope?.blocks === undefined) return { blocks, replay: envelope, truncatedToolCalls }
-    if (envelope.blocks.length !== all.length) return { blocks, replay: envelope, truncatedToolCalls }
+    if (envelope?.blocks === undefined) return { blocks, replay: envelope }
+    if (envelope.blocks.length !== all.length) return { blocks, replay: undefined }
     return {
       blocks,
-      replay: droppedAll === undefined || blocks.length === all.length
+      replay: kept === undefined || blocks.length === all.length
         ? envelope
-        : { response: envelope.response, blocks: envelope.blocks.filter((_, position) => droppedAll[position]) },
-      truncatedToolCalls,
+        : { response: envelope.response, blocks: envelope.blocks.filter((_, position) => kept[position]) },
     }
   }
 
@@ -182,12 +159,22 @@ export class BlockAssembler {
   }
 
   /**
-   * Tool-call blocks preserved despite max-tokens truncation.
-   * When the stream was cut short, the last tool-call (if any) is kept in
-   * `blocks()` and also returned here so the caller can retry or surface it.
+   * Assemble the prefix an interrupted stream can safely finalize: closed and
+   * open text/reasoning blocks with non-whitespace content, in stream order.
+   * Tool calls are omitted because interruption precedes dispatch; retaining
+   * one would require a fabricated result. Open unknown blocks are also omitted.
+   * @returns the kept blocks; empty when nothing streamed before the interruption.
    */
-  get truncatedToolCalls(): ContentBlock[] {
-    return this.assembled().truncatedToolCalls
+  interruptedBlocks(): ContentBlock[] {
+    return this.order
+      .map((index) => {
+        const partial = this.mustGet(index)
+        const type = partial.block?.type ?? partial.blockType
+        if (type !== 'text' && type !== 'reasoning') return undefined
+        return this.assemble(partial, index)
+      })
+      .filter((block): block is ContentBlock =>
+        (block?.type === 'text' || block?.type === 'reasoning') && block.text.trim() !== '')
   }
 
   /** Usage from the `usage` chunk; undefined until one arrives. */

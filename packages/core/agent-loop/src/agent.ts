@@ -337,25 +337,39 @@ export class ReactLoopAgent implements Agent {
     const system = renderPrompt(assembly)
 
     while (true) {
-      // Read contextWindow from the resolved model catalog (preferred) or fall back to 32768.
-      // DeepSeek v4 flash/pro support 1M/672K tokens; using a fixed small window
-      // wastes prefix cache and forces unnecessary compaction.
-      const modelContextWindow = preparedCall?.context?.contextWindow ?? 32768
-      const { request, preparedCall: nextPreparedCall } = await this.buildRequest(
-        turn, step, assembly.tools, system, this.session.deriveMessages({ contextWindow: modelContextWindow, minTurns: 3 }), signal,
+      const { request, preparedCall } = await this.buildRequest(
+        turn, step, assembly.tools, system, this.session.deriveMessages(), signal,
       )
       const assembler = new BlockAssembler()
       const chunkSeqs: number[] = []
-      const stream = nextPreparedCall?.stream(request) ?? this.loopCtx.llm.stream(request)
-      signal.throwIfAborted()
-      for await (const chunk of stream) {
+      try {
+        const stream = preparedCall?.stream(request) ?? this.loopCtx.llm.stream(request)
         signal.throwIfAborted()
-        chunkSeqs.push(this.session.append('assistant/chunk', { turn, step, chunk }).seq)
-        assembler.push(chunk)
+        for await (const chunk of stream) {
+          signal.throwIfAborted()
+          chunkSeqs.push(this.session.append('assistant/chunk', { turn, step, chunk }).seq)
+          assembler.push(chunk)
+        }
+        signal.throwIfAborted()
+      } catch (error: unknown) {
+        if (signal.aborted) {
+          const content = assembler.interruptedBlocks()
+          if (content.length > 0) {
+            this.session.append('assistant/message', {
+              turn,
+              step,
+              message: createAssistantMessage({
+                content,
+                source: { provider: request.provider, model: request.model },
+              }),
+              interrupted: true,
+              ...assembler.usage === undefined ? {} : { usage: assembler.usage },
+            }, { surfaceOp: 'append', sourceEventSeqs: chunkSeqs })
+          }
+        }
+        throw error
       }
-      signal.throwIfAborted()
       const finish = assembler.finish
-      const truncatedToolCalls = assembler.truncatedToolCalls
       if (finish.kind === 'error' || finish.kind === 'aborted') {
         const action = await this.dispatch.waterfall(
           'agent/request-error', {
@@ -390,35 +404,10 @@ export class ReactLoopAgent implements Agent {
           step,
           message,
           ...assembler.usage === undefined ? {} : { usage: assembler.usage },
-          ...(truncatedToolCalls.length > 0 ? { truncatedToolCalls } : {}),
         },
         { surfaceOp: 'append', sourceEventSeqs: chunkSeqs },
       )
-      if (finish.kind === 'max-tokens') {
-        // If we have truncated tool calls, re-insert them into the inbox so the
-        // agent can retry rather than entering a dead loop of "intent without execution".
-        if (truncatedToolCalls.length > 0) {
-          const toolCalls = truncatedToolCalls.map(block => ({
-            type: 'tool-call' as const,
-            id: block.id,
-            name: block.name,
-            arguments: block.arguments,
-          }))
-          // Emit a session event so the UI / audit trail knows about it,
-          // then queue the preserved tool calls for the next step.
-          this.session.append('assistant/truncated-tool-calls', {
-            turn, step, toolCalls,
-            reason: finish.reason ?? 'max-tokens',
-          } as unknown as Record<string, unknown>, { surfaceOp: 'append' })
-          this.inbox.splice('next-step', this.inbox.nextStep.length, 0, [
-            { turn, step, toolCalls }
-          ])
-          // Keep returning pure max-tokens — the driver treats it as sticky.
-          // The queued tool calls will be picked up by the next step.
-          return { kind: 'max-tokens' as const }
-        }
-        return { kind: 'max-tokens' }
-      }
+      if (finish.kind === 'max-tokens') return { kind: 'max-tokens' }
 
       const toolCalls = message.content.filter(block => block.type === 'tool-call')
       if (toolCalls.length === 0) return { kind: 'completed' }
