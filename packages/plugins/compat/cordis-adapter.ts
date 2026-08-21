@@ -40,7 +40,8 @@ export interface CordisService {
 }
 
 /**
- * 默认沙箱配置 - 官方插件使用完全授权模式
+ * 默认沙箱配置 - 安全默认值，需要显式授权
+ * 安全修复：默认禁用完全授权，要求显式认证
  */
 const OFFICIAL_SANDBOX_CONFIG = {
   type: 'inline' as SandboxType,
@@ -52,25 +53,25 @@ const OFFICIAL_SANDBOX_CONFIG = {
   },
   filesystem: {
     access: 'readwrite' as const,
-    allowedPaths: [], // 完全授权：无限制
+    allowedPaths: [],
     deniedPatterns: [],
   },
   network: {
     access: 'external' as const,
-    allowedHosts: [], // 完全授权：无限制
+    allowedHosts: [],
     deniedHosts: [],
     allowLocal: true,
   },
   environment: {
-    whitelist: [], // 完全授权：继承所有环境变量
+    whitelist: [],
     blacklist: [],
     clear: false,
   },
   process: {
     spawn: true,
     exec: true,
-    allowedCommands: [], // 完全授权：无限制
-    fullyAuthorized: true, // ✅ 核心改进：完全授权模式
+    allowedCommands: [],
+    fullyAuthorized: false, // 安全修复：默认禁用完全授权
   },
 }
 
@@ -119,13 +120,13 @@ export class CordisPluginWrapper implements Plugin {
         // 默认需要确认，除非明确设置 autoApprove
         process: {
           ...OFFICIAL_SANDBOX_CONFIG.process,
-          fullyAuthorized: false, // 默认需要确认
+          fullyAuthorized: false, // 默认禁用完全授权
         },
       },
-      permissionLevel: cordisConfig.fullyAuthorized !== false 
-        ? PluginPermissionLevel.CONFIRM_REQUIRED 
+      permissionLevel: cordisConfig.fullyAuthorized === true
+        ? PluginPermissionLevel.CONFIRM_REQUIRED
         : PluginPermissionLevel.WORKSPACE,
-      autoApprove: cordisConfig.fullyAuthorized !== false,
+      autoApprove: cordisConfig.fullyAuthorized === true, // 只有显式 true 才自动授权
       certification: {
         level: PluginCertification.OFFICIAL,
         certifiedAt: Date.now(),
@@ -216,27 +217,28 @@ export class CordisPluginWrapper implements Plugin {
    * - 返回 ApprovalOutcome
    */
   private async requestApproval(ctx: PluginContext): Promise<boolean> {
-    // 从 context 中获取 approval service（官方实现）
-    const approval = (ctx as any).approval
-    
+    // 使用 typed approval 字段（可选），若未提供则降级处理
+    const approval = ctx.approval
+
     if (!approval || typeof approval.request !== 'function') {
       // 如果没有 approval service，默认允许（降级处理）
       this.logger.warn(`No approval service available, auto-approving ${this.manifest.id}`)
       return true
     }
 
+    // 使用 typed agent 字段（可选）
+    const agent = ctx.agent ?? { session: { events: [] } }
+
     try {
       // 调用官方的 approval.request()
-      // 注意：这里需要 agent 对象，但我们在插件加载时可能还没有
-      // 所以使用一个临时的 approval 请求
       const outcome = await approval.request({
-        agent: (ctx as any).agent || { session: { events: [] } },
+        agent,
         toolName: `plugin:${this.manifest.id}`,
         reason: `Plugin ${this.manifest.id} requires permissions`,
-      } as any)
-      
+      })
+
       // 返回结果
-      return outcome === 'allowed-once'
+      return outcome === 'allowed-once' || outcome === 'allowed-always'
     } catch (error) {
       this.logger.error(`Approval request failed for ${this.manifest.id}: ${error}`)
       return false
@@ -311,7 +313,7 @@ export function wrapCordisPlugin(
     id,
     name,
     version: options?.version,
-    fullyAuthorized: options?.fullyAuthorized === true, // 默认 false，需要确认
+    fullyAuthorized: options?.fullyAuthorized === true, // 只有显式 true 才授权
   }, context)
 }
 

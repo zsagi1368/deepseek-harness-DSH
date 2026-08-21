@@ -5,7 +5,42 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { DefaultPluginRegistry } from '../packages/plugins/registry/registry.js'
 import { BasePlugin } from '../packages/plugins/base/base.js'
-import { PluginManifest, PluginStatus } from '../packages/plugins/spec/index.js'
+import { PluginManifest, PluginStatus, PluginContext } from '../packages/plugins/spec/index.js'
+
+/**
+ * 最小化 mock PluginContext — 替代原始测试中反复使用的 {} as any
+ */
+function createMockContext(): PluginContext {
+  return {
+    services: new Map(),
+    emit: () => {},
+    on: () => () => {},
+    once: () => () => {},
+    off: () => {},
+    config: {},
+    setConfig: () => {},
+    getConfig: () => undefined,
+    effect: () => {},
+    onDispose: () => {},
+    logger: {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      debug: () => {},
+    },
+    status: PluginStatus.ACTIVE,
+    setWarnings: () => {},
+    markDeprecated: () => {},
+    sandbox: {
+      exec: async () => ({ exitCode: 0, stdout: '', stderr: '', duration: 0 }),
+      read: async () => '',
+      write: async () => {},
+      list: async () => [],
+    },
+    registerCapability: () => {},
+    unregisterCapability: () => {},
+  }
+}
 
 describe('Plugin Registry Integration', () => {
   let registry: DefaultPluginRegistry
@@ -55,7 +90,7 @@ describe('Plugin Registry Integration', () => {
     }
 
     const manifest = createTestManifest()
-    const plugin = new TestPlugin(manifest, {} as any)
+    const plugin = new TestPlugin(manifest, createMockContext())
 
     const result = await registry.register(plugin)
     expect(result.success).toBe(true)
@@ -68,7 +103,7 @@ describe('Plugin Registry Integration', () => {
     }
 
     const manifest = createTestManifest({ id: 'invalid' })
-    const plugin = new TestPlugin(manifest, {} as any)
+    const plugin = new TestPlugin(manifest, createMockContext())
 
     const result = await registry.register(plugin)
     expect(result.success).toBe(false)
@@ -81,7 +116,7 @@ describe('Plugin Registry Integration', () => {
     }
 
     const manifest = createTestManifest()
-    const plugin = new TestPlugin(manifest, {} as any)
+    const plugin = new TestPlugin(manifest, createMockContext())
 
     await registry.register(plugin)
     expect(registry.getStatus('test/plugin')).toBe(PluginStatus.ACTIVE)
@@ -94,11 +129,11 @@ describe('Plugin Registry Integration', () => {
     }
 
     const manifest = createTestManifest()
-    const plugin = new TestPlugin(manifest, {} as any)
+    const plugin = new TestPlugin(manifest, createMockContext())
 
     await registry.register(plugin)
     await registry.unregister('test/plugin')
-    
+
     expect(registry.get('test/plugin')).toBeNull()
   })
 
@@ -108,7 +143,7 @@ describe('Plugin Registry Integration', () => {
     }
 
     const manifest = createTestManifest()
-    const plugin = new TestPlugin(manifest, {} as any)
+    const plugin = new TestPlugin(manifest, createMockContext())
 
     await registry.register(plugin)
     const report = registry.getHealthReport()

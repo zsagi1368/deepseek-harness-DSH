@@ -13,6 +13,7 @@ interface WorkerHandle {
   channel: MessageChannel
   startTime: number
   memoryUsage: number
+  pendingRequests: Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>
 }
 
 export class WorkerSandbox implements SandboxContext {
@@ -20,6 +21,7 @@ export class WorkerSandbox implements SandboxContext {
   private pluginId: string
   private config: PluginSandboxConfig
   private entryPoint: string
+  private requestId = 0
 
   constructor(pluginId: string, config: PluginSandboxConfig, entryPoint: string) {
     this.pluginId = pluginId
@@ -55,6 +57,7 @@ export class WorkerSandbox implements SandboxContext {
       channel,
       startTime: Date.now(),
       memoryUsage: 0,
+      pendingRequests: new Map(),
     }
 
     this.workers.set(this.pluginId, handle)
@@ -66,10 +69,19 @@ export class WorkerSandbox implements SandboxContext {
 
     worker.on('exit', (code) => {
       this.workers.delete(this.pluginId)
+      // Reject all pending requests
+      for (const { reject } of handle.pendingRequests.values()) {
+        reject(new Error(`Worker exited with code ${code}`))
+      }
+      handle.pendingRequests.clear()
     })
 
     worker.on('error', (error) => {
       this.workers.delete(this.pluginId)
+      for (const { reject } of handle.pendingRequests.values()) {
+        reject(error)
+      }
+      handle.pendingRequests.clear()
       throw error
     })
   }
@@ -98,7 +110,6 @@ export class WorkerSandbox implements SandboxContext {
    * 读取文件（受限）
    */
   async read(path: string): Promise<string> {
-    // 需要通过 IPC 调用主线程
     const result = await this.postMessage({
       type: 'read',
       path,
@@ -139,29 +150,25 @@ export class WorkerSandbox implements SandboxContext {
    * 发送消息到主线程
    */
   private postMessage(message: unknown): Promise<unknown> {
+    const handle = this.workers.get(this.pluginId)
+    if (!handle) {
+      return Promise.reject(new Error(`Plugin ${this.pluginId} is not running`))
+    }
+
+    const id = ++this.requestId
+    const timeout = this.config.resources.timeoutMs
+
     return new Promise((resolve, reject) => {
-      const handle = this.workers.get(this.pluginId)
-      if (!handle) {
-        reject(new Error(`Plugin ${this.pluginId} is not running`))
-        return
-      }
-
-      const timeout = setTimeout(() => {
+      const timer = setTimeout(() => {
+        handle.pendingRequests.delete(id)
         reject(new Error('IPC timeout'))
-      }, this.config.resources.timeoutMs)
+      }, timeout)
 
-      handle.channel.port1.on('message', (msg) => {
-        clearTimeout(timeout)
-        if (msg.type === 'response' && msg.id === message) {
-          resolve(msg.result)
-        } else if (msg.type === 'error') {
-          reject(new Error(msg.error))
-        }
-      })
+      handle.pendingRequests.set(id, { resolve, reject })
 
       handle.channel.port2.postMessage({
         type: 'request',
-        id: Date.now(),
+        id,
         ...message,
       })
     })
@@ -171,7 +178,25 @@ export class WorkerSandbox implements SandboxContext {
    * 处理来自主线程的消息
    */
   private handleMessage(message: unknown): void {
-    // 处理响应
-    console.log('[WorkerSandbox] Received message:', message)
+    if (!message || typeof message !== 'object') return
+
+    const msg = message as Record<string, unknown>
+
+    // 处理响应（来自工作线程的响应）
+    if (msg.type === 'response') {
+      const id = msg.id as number
+      const handle = this.workers.get(this.pluginId)
+      if (handle) {
+        const pending = handle.pendingRequests.get(id)
+        if (pending) {
+          handle.pendingRequests.delete(id)
+          if (msg.error) {
+            pending.reject(new Error(msg.error as string))
+          } else {
+            pending.resolve(msg.result)
+          }
+        }
+      }
+    }
   }
 }

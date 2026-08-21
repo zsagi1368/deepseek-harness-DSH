@@ -16,11 +16,34 @@ import {
   normalizePluginId,
 } from '../spec/index.js'
 
+/**
+ * Minimal semver comparison: parses "major.minor.patch" and optional prerelease tags.
+ * Returns -1 if a < b, 0 if equal, 1 if a > b.
+ */
+function semverCompare(a: string, b: string): number {
+  const parse = (v: string): [number, number, number, string] => {
+    const m = v.trim().match(/^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/)
+    if (!m) return [0, 0, 0, v]
+    return [parseInt(m[1]!, 10), parseInt(m[2]!, 10), parseInt(m[3]!, 10), m[4] || '']
+  }
+  const [aMaj, aMin, aPat, aPre] = parse(a)
+  const [bMaj, bMin, bPat, bPre] = parse(b)
+  if (aMaj !== bMaj) return aMaj - bMaj
+  if (aMin !== bMin) return aMin - bMin
+  if (aPat !== bPat) return aPat - bPat
+  // prerelease has lower precedence than release
+  if (aPre && !bPre) return -1
+  if (!aPre && bPre) return 1
+  return aPre.localeCompare(bPre)
+}
+
 export class DefaultPluginRegistry implements PluginRegistry {
   private plugins = new Map<string, Plugin>()
   private statusMap = new Map<string, PluginStatus>()
   private errors = new Map<string, string[]>()
   private warnings = new Map<string, string[]>()
+  private disposables = new Map<string, Array<() => void>>()
+  private debugMode = process.env.DSH_DEBUG === '1' || process.env.DSH_DEBUG === 'true'
 
   async register(plugin: Plugin): Promise<RegistrationResult> {
     // 验证插件 ID
@@ -55,6 +78,7 @@ export class DefaultPluginRegistry implements PluginRegistry {
     // 注册插件
     this.plugins.set(normalizedId, plugin)
     this.statusMap.set(normalizedId, PluginStatus.ACTIVE)
+    this.disposables.set(normalizedId, [])
     
     // 调用 install
     try {
@@ -86,6 +110,7 @@ export class DefaultPluginRegistry implements PluginRegistry {
     this.statusMap.delete(pluginId)
     this.errors.delete(pluginId)
     this.warnings.delete(pluginId)
+    this.disposables.delete(pluginId)
   }
 
   get(pluginId: string): Plugin | null {
@@ -116,6 +141,29 @@ export class DefaultPluginRegistry implements PluginRegistry {
 
   getStatus(pluginId: string): PluginStatus {
     return this.statusMap.get(pluginId) || PluginStatus.ERROR
+  }
+
+  /**
+   * Set warnings for a plugin and update status to WARNINGS if it was ACTIVE.
+   */
+  setPluginWarnings(pluginId: string, warnings: string[]): void {
+    if (warnings.length > 0) {
+      this.warnings.set(pluginId, warnings)
+      // Upgrade status to WARNINGS only if currently ACTIVE
+      if (this.statusMap.get(pluginId) === PluginStatus.ACTIVE) {
+        this.statusMap.set(pluginId, PluginStatus.WARNINGS)
+      }
+    } else {
+      this.warnings.delete(pluginId)
+      // Downgrade back to ACTIVE if warnings are cleared and status is WARNINGS
+      if (this.statusMap.get(pluginId) === PluginStatus.WARNINGS) {
+        this.statusMap.set(pluginId, PluginStatus.ACTIVE)
+      }
+    }
+  }
+
+  getPluginWarnings(pluginId: string): string[] | undefined {
+    return this.warnings.get(pluginId)
   }
 
   getHealthReport(): HealthReport {
@@ -174,14 +222,14 @@ export class DefaultPluginRegistry implements PluginRegistry {
     // 简单兼容性检查
     if (compatible.includes('<')) {
       const maxVersion = compatible.split('<')[1]?.trim()
-      if (maxVersion && kernelVersion >= maxVersion) {
+      if (maxVersion && semverCompare(kernelVersion, maxVersion) > 0) {
         issues.push(`Plugin requires DSH < ${maxVersion}`)
       }
     }
 
     if (compatible.includes('>=')) {
       const minVersion = compatible.split('>=')[1]?.split(' ')[0]
-      if (minVersion && kernelVersion < minVersion) {
+      if (minVersion && semverCompare(kernelVersion, minVersion) < 0) {
         issues.push(`Plugin requires DSH >= ${minVersion}`)
       }
     }
@@ -216,12 +264,67 @@ export class DefaultPluginRegistry implements PluginRegistry {
     }
   }
 
+  setStatus(pluginId: string, status: PluginStatus): void {
+    this.statusMap.set(pluginId, status)
+  }
+
   async update(pluginId: string, newPlugin: Plugin): Promise<void> {
     await this.unregister(pluginId)
     await this.register(newPlugin)
   }
 
-  private createContext(pluginId: string) {
+  /**
+   * Dispose all registered plugins and clean up resources.
+   */
+  async dispose(): Promise<void> {
+    const pluginIds = Array.from(this.plugins.keys())
+    for (const pluginId of pluginIds) {
+      try {
+        // Run plugin-specific disposables first
+        const disposables = this.disposables.get(pluginId)
+        if (disposables) {
+          for (const fn of disposables) {
+            try { fn() } catch {}
+          }
+        }
+        // Then call uninstall if available
+        const plugin = this.plugins.get(pluginId)
+        if (plugin?.uninstall) {
+          await plugin.uninstall(this.createContext(pluginId))
+        }
+      } catch (error) {
+        console.error(`Failed to dispose plugin ${pluginId}:`, error)
+      } finally {
+        this.plugins.delete(pluginId)
+        this.statusMap.delete(pluginId)
+        this.errors.delete(pluginId)
+        this.warnings.delete(pluginId)
+        this.disposables.delete(pluginId)
+      }
+    }
+  }
+
+  /**
+   * Register a cleanup function for a plugin.
+   */
+  registerDisposable(pluginId: string, fn: () => void): void {
+    const disposables = this.disposables.get(pluginId)
+    if (disposables) {
+      disposables.push(fn)
+    }
+  }
+
+  private createContext(pluginId: string): PluginContext {
+    // In DEBUG mode, log a warning that this is a placeholder context
+    if (this.debugMode) {
+      console.warn(
+        `[DSH DEBUG] createContext called for plugin "${pluginId}". ` +
+        `The returned context is a minimal placeholder — services and sandbox are no-ops.`
+      )
+    }
+
+    const warningsStore: string[] = []
+
     return {
       services: new Map(),
       emit: () => {},
@@ -232,19 +335,38 @@ export class DefaultPluginRegistry implements PluginRegistry {
       setConfig: () => {},
       getConfig: () => undefined,
       effect: () => {},
-      onDispose: () => {},
+      onDispose: (fn) => {
+        this.registerDisposable(pluginId, fn)
+      },
       logger: {
-        info: () => {},
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
+        info: (msg, meta) => console.log(`[Plugin ${pluginId}] ${msg}`, meta ?? ''),
+        warn: (msg, meta) => console.warn(`[Plugin ${pluginId}] ${msg}`, meta ?? ''),
+        error: (msg, meta) => console.error(`[Plugin ${pluginId}] ${msg}`, meta ?? ''),
+        debug: (msg, meta) => { if (this.debugMode) console.debug(`[Plugin ${pluginId}] ${msg}`, meta ?? '') },
       },
       status: PluginStatus.ACTIVE,
-      setWarnings: () => {},
-      markDeprecated: () => {},
-      sandbox: {} as any,
+      setWarnings: (warnings: string[]) => {
+        this.setPluginWarnings(pluginId, warnings)
+      },
+      markDeprecated: (_reason: string, _replaceWith?: string) => {
+        this.statusMap.set(pluginId, PluginStatus.DEPRECATED)
+      },
+      sandbox: this.createMinimalSandbox(pluginId),
       registerCapability: () => {},
       unregisterCapability: () => {},
+    }
+  }
+
+  /**
+   * Create a minimal no-op SandboxContext for the placeholder PluginContext.
+   */
+  private createMinimalSandbox(pluginId: string) {
+    const noopResult = { exitCode: 0, stdout: '', stderr: '', duration: 0 }
+    return {
+      exec: async () => noopResult,
+      read: async () => '',
+      write: async () => {},
+      list: async () => [],
     }
   }
 }

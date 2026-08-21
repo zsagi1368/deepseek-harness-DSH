@@ -33,7 +33,7 @@ class CheckFailed implements CheckResult {
 
 export class LoadGuard {
   private checks: PreLoadCheck[] = [
-    new Manifest完整性Check(),
+    new ManifestIntegrityCheck(),
     new VersionCompatibilityCheck(),
     new SandboxConfigCheck(),
     new CapabilityValidityCheck(),
@@ -66,7 +66,7 @@ export class LoadGuard {
   }
 }
 
-class Manifest完整性Check implements PreLoadCheck {
+class ManifestIntegrityCheck implements PreLoadCheck {
   name = 'manifest-integrity'
 
   async run(plugin: Plugin): Promise<CheckResult> {

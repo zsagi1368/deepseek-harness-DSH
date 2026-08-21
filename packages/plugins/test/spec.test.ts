@@ -119,7 +119,7 @@ describe('PluginSpec', () => {
 
   describe('PluginLevel', () => {
     it('should have all levels', () => {
-      expect(PostiveLevel.READ_ONLY).toBe('read-only')
+      expect(PluginLevel.READ_ONLY).toBe('read-only')
       expect(PluginLevel.WORKSPACE).toBe('workspace')
       expect(PluginLevel.SYSTEM).toBe('system')
     })

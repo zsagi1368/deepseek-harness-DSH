@@ -1,6 +1,6 @@
 /**
  * PluginWatcher - 插件监控器
- * 
+ *
  * 监控单个插件的运行状态，包括超时、内存、错误计数等。
  */
 
@@ -59,6 +59,7 @@ export class PluginWatcher {
     } finally {
       if (this.timeoutHandle) {
         clearTimeout(this.timeoutHandle)
+        this.timeoutHandle = undefined
       }
     }
   }
@@ -67,12 +68,13 @@ export class PluginWatcher {
     const uptime = Date.now() - this.startTime
     const errorRate = this.executionCount > 0 ? this.errorCount / this.executionCount : 0
 
+    const maxCallCount = this.options.maxCallCount
+    const isApproachingLimit = maxCallCount != null && this.executionCount > maxCallCount * 0.8
+
     return {
       healthy: this.errorCount === 0,
       errors: this.errorCount > 0 ? [this.lastError?.message] : undefined,
-      warnings: this.executionCount > this.options.maxCallCount! * 0.8 
-        ? ['Approaching call limit'] 
-        : undefined,
+      warnings: isApproachingLimit ? ['Approaching call limit'] : undefined,
       lastError: this.lastError?.message,
       lastErrorTime: this.lastError ? Date.now() : undefined,
       uptime,

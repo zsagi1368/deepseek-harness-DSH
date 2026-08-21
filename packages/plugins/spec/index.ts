@@ -363,6 +363,21 @@ export interface ExecResult {
  * 
  * 插件通过此上下文访问 DSH 核心能力。
  */
+/** Approval request payload */
+export interface ApprovalRequest {
+  agent: { session?: { events?: unknown[] } }
+  toolName: string
+  reason: string
+}
+
+/** Approval outcome */
+export type ApprovalOutcome = 'allowed-once' | 'rejected' | 'allowed-always' | 'rejected-always'
+
+/** Approval service */
+export interface ApprovalService {
+  request(payload: ApprovalRequest): Promise<ApprovalOutcome>
+}
+
 export interface PluginContext {
   // === 服务访问 ===
   services: Map<string, unknown>
@@ -396,6 +411,12 @@ export interface PluginContext {
   // === 注册能力 ===
   registerCapability(capability: CapabilityDeclaration): void
   unregisterCapability(name: string): void
+
+  // === 可选字段：审批与 Agent ===
+  /** 审批服务（未提供时为 undefined，插件需自行检查） */
+  approval?: ApprovalService
+  /** 宿主 agent 对象（未提供时为 undefined） */
+  agent?: Record<string, unknown>
 }
 
 // ========== Plugin ==========
@@ -493,6 +514,16 @@ export interface PluginRegistry {
   enable(pluginId: string): Promise<void>
   disable(pluginId: string, reason?: string): Promise<void>
   update(pluginId: string, newPlugin: Plugin): Promise<void>
+  setStatus(pluginId: string, status: PluginStatus): void
+
+  // === 生命周期 ===
+  /** Dispose all plugins and release resources */
+  dispose(): Promise<void>
+
+  // === 警告管理 ===
+  /** Set warnings for a plugin and adjust status accordingly */
+  setPluginWarnings(pluginId: string, warnings: string[]): void
+  getPluginWarnings(pluginId: string): string[] | undefined
 }
 
 // ========== ID Utilities ==========

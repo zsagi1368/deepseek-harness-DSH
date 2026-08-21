@@ -89,9 +89,15 @@ export class HealthGuard {
   }
 
   private async updateStatus(pluginId: string, status: PluginStatus): Promise<void> {
-    // 更新 Registry 中的状态
-    // 这里需要 Registry 提供支持
-    console.log(`[HealthGuard] Plugin ${pluginId} status: ${status}`)
+    if (status === PluginStatus.ACTIVE) {
+      await this.registry.enable(pluginId)
+    } else if (status === PluginStatus.DISABLED) {
+      await this.registry.disable(pluginId, `auto-disabled`)
+    } else if (status === PluginStatus.ERROR) {
+      await this.registry.disable(pluginId, 'auto-error')
+    } else {
+      this.registry.setStatus(pluginId, status)
+    }
   }
 
   private async disablePlugin(pluginId: string, reason?: string): Promise<void> {
