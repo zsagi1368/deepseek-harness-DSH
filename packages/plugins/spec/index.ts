@@ -391,7 +391,7 @@ export interface PluginContext {
   // === 配置访问 ===
   config: Record<string, unknown>
   setConfig(key: string, value: unknown): void
-  getConfig<T>(key: string, default?: T): T
+  getConfig<T>(key: string, defaultValue?: T): T
 
   // === 生命周期 ===
   effect(fn: () => void | (() => void)): void
