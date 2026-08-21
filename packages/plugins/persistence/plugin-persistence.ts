@@ -14,13 +14,13 @@ import { PluginManifest } from '../spec/index.js'
  * 默认数据存储目录名称（相对于分支根目录）
  * 与官方的 ~/.dsh 对应，但存储在分支目录下
  */
-export const DSH_PLUGINS_DIR_NAME = '.dsh-plugins'
+export const DSH_BRANCH_DIR_NAME = 'deepseek-harness-branchDSH'
 
 /**
  * 环境变量名称（用于自定义存储位置）
  * 与官方的 DSH_HOME 对应
  */
-export const DSH_PLUGINS_HOME_ENV = 'DSH_PLUGINS_HOME'
+export const DSH_BRANCH_HOME_ENV = 'DSH_BRANCH_HOME'
 
 /**
  * 插件持久化配置
@@ -64,25 +64,25 @@ export class PluginPersistence {
 
   /**
    * 解析默认存储根目录
-   * 
+   *
    * 优先级：
    * 1. 配置参数 storageRoot
-   * 2. 环境变量 DSH_PLUGINS_HOME
-   * 3. 当前工作目录下的 .dsh-plugins
-   * 
+   * 2. 环境变量 DSH_BRANCH_HOME
+   * 3. 当前工作目录下的 deepseek-harness-branchDSH
+   *
    * 与官方的 DSH_HOME 机制对应：
    * - 官方: DSH_HOME -> ~/.dsh
-   * - 我们: DSH_PLUGINS_HOME -> .dsh-plugins (相对分支目录)
+   * - 我们: DSH_BRANCH_HOME -> deepseek-harness-branchDSH (相对分支目录)
    */
   private resolveDefaultStorageRoot(): string {
     // 1. 优先使用环境变量
-    const envPath = process.env[DSH_PLUGINS_HOME_ENV]
+    const envPath = process.env[DSH_BRANCH_HOME_ENV]
     if (envPath && envPath.trim().length > 0) {
       return resolve(envPath)
     }
-    
-    // 2. 默认使用当前工作目录下的 .dsh-plugins
-    return resolve(process.cwd(), DSH_PLUGINS_DIR_NAME)
+
+    // 2. 默认使用当前工作目录下的 deepseek-harness-branchDSH
+    return resolve(process.cwd(), DSH_BRANCH_DIR_NAME)
   }
 
   /**
