@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-ui-plugin-manager",
-  "version": "0.1.0-rc.8",
+  "version": "0.1.0-rc.8-DSH20260821a",
   "private": true,
   "description": "Plugin Manager UI - Complete plugin management interface",
   "type": "module",

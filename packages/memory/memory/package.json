@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-memory",
-  "version": "0.1.0-rc.8",
+  "version": "0.1.0-rc.8-DSH20260821a",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
