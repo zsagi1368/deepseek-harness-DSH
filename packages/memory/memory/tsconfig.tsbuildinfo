@@ -1,0 +1,1 @@
+{"version":"7.0.2","errors":true,"root":["./src/index.ts","./tests/memory.spec.ts"],"packageJsons":["./package.json"],"missingPackageJsons":["../../../../../../../../../node_modules/@deepseek-ai/dsh-session/package.json","../../../../../../../../../node_modules/vitest/package.json"]}
