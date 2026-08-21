@@ -53,15 +53,21 @@ export class InlineSandbox implements SandboxContext {
 
   /**
    * 执行命令
+   * 安全修复：统一使用execFile，避免shell注入
    */
   async exec(command: string, options?: { timeout?: number }): Promise<ExecResult> {
-    // 完全授权模式：与 core 一致，无限制
+    // 完全授权模式：与 core 一致，但仍需安全执行
     if (this.config.process.fullyAuthorized) {
-      const { exec } = await import('child_process')
+      const { execFile } = await import('child_process')
       const timeout = options?.timeout || this.config.resources.timeoutMs
 
+      // 安全解析命令：拆分为可执行文件和参数
+      const cmdParts = command.trim().split(/\s+/)
+      const cmd = cmdParts[0] || ''
+      const args = cmdParts.slice(1)
+
       return new Promise((resolve, reject) => {
-        exec(command, {
+        execFile(cmd, args, {
           timeout,
           maxBuffer: this.config.resources.maxOutputBytes * 2,
           ...(options?.cwd ? { cwd: options.cwd } : {}),
@@ -86,16 +92,20 @@ export class InlineSandbox implements SandboxContext {
       throw new Error(`exec() is not allowed for plugin ${this.pluginId}`)
     }
 
-    const cmdBase = extractCommandBase(command)
+    // 安全解析命令
+    const cmdParts = command.trim().split(/\s+/)
+    const cmdBase = cmdParts[0] || ''
+    const args = cmdParts.slice(1)
+
     if (!cmdBase || !this.config.process.allowedCommands.includes(cmdBase)) {
       throw new Error(`Command '${command}' is not in the allowed list`)
     }
 
-    const { exec } = await import('child_process')
+    const { execFile } = await import('child_process')
     const timeout = options?.timeout || this.config.resources.timeoutMs
 
     return new Promise((resolve, reject) => {
-      exec(command, {
+      execFile(cmdBase, args, {
         timeout,
         maxBuffer: this.config.resources.maxOutputBytes * 2,
       }, (error, stdout, stderr) => {
