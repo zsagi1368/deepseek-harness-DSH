@@ -34,6 +34,16 @@ export { deriveEventMessage, foldSurface, isAppendSurfaceEvent, isReplacementSur
 export { canonicalHeader, foldRequestHeader, headerEquals } from './request-header.ts'
 export { KNOWN_SESSION_EVENT_TYPES } from './known-event-types.ts'
 
+/** Options for deriving messages with context window management. */
+export interface DeriveMessagesOptions {
+  /** Maximum tokens to include. When exceeded, earliest turns are truncated. */
+  contextWindow?: number
+  /** Minimum number of complete turns to always retain. */
+  minTurns?: number
+  /** Token threshold at which early turns should be summarized. */
+  summaryThreshold?: number
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     sessions: SessionStore
@@ -704,16 +714,6 @@ export class Session {
   private derivedNodes = 0
   /** {@link SurfaceManager.replaceGeneration} the cache was built under. */
   private derivedGeneration = 0
-
-  /** Options for deriving messages with context window management. */
-  export interface DeriveMessagesOptions {
-    /** Maximum tokens to include. When exceeded, earliest turns are truncated. */
-    contextWindow?: number
-    /** Minimum number of complete turns to always retain. */
-    minTurns?: number
-    /** Token threshold at which early turns should be summarized. */
-    summaryThreshold?: number
-  }
 
   /**
    * Derive the LLM message history by walking the ordered sequences of
