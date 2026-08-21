@@ -45,6 +45,8 @@ interface SessionStatsTotals {
   decodeMs: number
   /** Summed provider output tokens over the same steps. */
   decodeTokens: number
+  /** Summed provider input (prompt) tokens over all steps. */
+  inputTokens: number
 }
 
 /**
@@ -77,6 +79,7 @@ const sessionStatsSchema = z.object({
   ttftSteps: z.number().int().nonnegative(),
   decodeMs: z.number().nonnegative(),
   decodeTokens: z.number().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
 }).strict()
 
 /**
@@ -108,6 +111,12 @@ function usageOutputTokens(usage: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
 
+function usageInputTokens(usage: unknown): number | null {
+  if (typeof usage !== 'object' || usage === null) return null
+  const value = (usage as { inputTokens?: unknown }).inputTokens
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
 /** The `sessionStats` unit registered on `ctx.sessionProjections` (exported for the unit spec). */
 export const sessionStatsProjectionDefinition = {
   key: 'sessionStats',
@@ -122,6 +131,7 @@ export const sessionStatsProjectionDefinition = {
     ttftSteps: 0,
     decodeMs: 0,
     decodeTokens: 0,
+    inputTokens: 0,
     lastTurn: null,
     openStep: null,
     pendingCalls: {},
@@ -157,6 +167,10 @@ export const sessionStatsProjectionDefinition = {
           if (outputTokens !== null) {
             next.decodeMs += Math.max(0, event.time - open.firstTokenTime)
             next.decodeTokens += outputTokens
+          }
+          const inputTokens = usageInputTokens(event.data.usage)
+          if (inputTokens !== null) {
+            next.inputTokens += inputTokens
           }
         }
         return next
@@ -204,6 +218,7 @@ export const sessionStatsProjectionDefinition = {
       ttftSteps: state.ttftSteps,
       decodeMs: state.decodeMs,
       decodeTokens: state.decodeTokens,
+      inputTokens: state.inputTokens,
     }),
   },
 } satisfies ProjectionDefinition<'sessionStats', SessionStatsState>
