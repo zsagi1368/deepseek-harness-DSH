@@ -2,18 +2,20 @@
  * PluginPersistence - 插件持久化管理
  *
  * 将PluginRegistry的状态持久化到文件系统。
- * 默认使用分支目录下的.dsh-plugins子目录，完全独立于官方的 ~/.dsh/。
+ * 默认使用用户主目录下的 .dsh-dsh 子目录（~/.dsh-dsh），与官方的 ~/.dsh/ 平行且互不干扰；
+ * 环境变量 DSH_BRANCH_HOME 的覆盖优先级最高。
  */
 
-import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from 'fs'
-import { join, dirname, resolve } from 'path'
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { join, dirname, resolve } from 'node:path'
+import os from 'node:os'
 import { PluginRegistry, PluginManifest } from '../spec/index.js'
 
 /**
- * 默认数据存储目录名称（相对于分支根目录）
- * 与官方的 ~/.dsh 对应，但存储在分支目录下
+ * 默认数据存储目录名称（位于用户主目录下，即 ~/.dsh-dsh）
+ * 与官方的 ~/.dsh 对应，但完全独立，不会冲突
  */
-export const DSH_BRANCH_DIR_NAME = 'deepseek-harness-branchDSH'
+export const DSH_BRANCH_DIR_NAME = '.dsh-dsh'
 
 /**
  * 环境变量名称（用于自定义存储位置）
@@ -25,7 +27,7 @@ export const DSH_BRANCH_HOME_ENV = 'DSH_BRANCH_HOME'
  * 插件持久化配置
  */
 export interface PluginPersistenceConfig {
-  /** 数据根目录（默认：分支目录下的 .dsh-plugins） */
+  /** 数据根目录（默认：~/.dsh-dsh，可用 DSH_BRANCH_HOME 覆盖） */
   storageRoot?: string | undefined
   /** 是否自动保存 */
   autoSave?: boolean | undefined
@@ -58,11 +60,11 @@ interface ResolvedPersistenceConfig {
 /**
  * PluginPersistence - 插件持久化管理器
  *
- * 所有插件配置、缓存、日志都存储在分支目录的.dsh-plugins子目录中，
+ * 所有插件配置、缓存、日志都存储在用户主目录的 .dsh-dsh 子目录中，
  * 完全独立于官方的 ~/.dsh/ 目录，不会冲突。
  *
  * 目录结构：
- * <branch-root>/.dsh-plugins/
+ * ~/.dsh-dsh/
  * ├── registry.json      # 插件注册表
  * ├── cache/             # 缓存目录
  * ├── logs/              # 日志目录
@@ -87,12 +89,12 @@ export class PluginPersistence {
    *
    * 优先级：
    * 1. 配置参数 storageRoot
-   * 2. 环境变量 DSH_BRANCH_HOME
-   * 3. 当前工作目录下的 deepseek-harness-branchDSH
+   * 2. 环境变量 DSH_BRANCH_HOME（覆盖优先级最高的环境入口）
+   * 3. 用户主目录下的 .dsh-dsh
    *
    * 与官方的 DSH_HOME 机制对应：
    * - 官方: DSH_HOME -> ~/.dsh
-   * - 我们: DSH_BRANCH_HOME -> deepseek-harness-branchDSH (相对分支目录)
+   * - 我们: DSH_BRANCH_HOME -> ~/.dsh-dsh
    */
   private resolveDefaultStorageRoot(): string {
     // 1. 优先使用环境变量
@@ -101,8 +103,8 @@ export class PluginPersistence {
       return resolve(envPath)
     }
 
-    // 2. 默认使用当前工作目录下的 deepseek-harness-branchDSH
-    return resolve(process.cwd(), DSH_BRANCH_DIR_NAME)
+    // 2. 默认使用用户主目录下的 .dsh-dsh，与官方 ~/.dsh 平行、互不干扰
+    return join(os.homedir(), DSH_BRANCH_DIR_NAME)
   }
 
   /**
@@ -225,7 +227,7 @@ export class PluginPersistence {
 
 /**
  * 创建默认的PluginPersistence实例
- * 使用当前分支目录作为存储根目录
+ * 使用用户主目录 ~/.dsh-dsh 作为存储根目录
  */
 export function createDefaultPersistence(registry: PluginRegistry): PluginPersistence {
   return new PluginPersistence(registry)

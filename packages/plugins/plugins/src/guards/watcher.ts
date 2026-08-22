@@ -42,18 +42,24 @@ export class PluginWatcher {
       )
     }
 
-    // 设置超时看门狗：触发即抛出，由宿主进程的 uncaughtException 策略处置。
-    /* v8 ignore next 3 -- watchdog only fires on a hung plugin; firing inside a test would kill the runner. */
-    this.timeoutHandle = setTimeout(() => {
-      throw new PluginTimeoutError(this.pluginId, this.options.timeoutMs)
-    }, this.options.timeoutMs)
+    // 设置超时 - 使用 Promise.race 确保超时可以正确传播到调用方，
+    // 不再依赖宿主进程的 uncaughtException 策略。
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      /* v8 ignore next 4 -- watchdog only fires on a hung plugin; firing inside a test would kill the runner. */
+      this.timeoutHandle = setTimeout(() => {
+        this.timeoutHandle = undefined
+        reject(new PluginTimeoutError(this.pluginId, this.options.timeoutMs))
+      }, this.options.timeoutMs)
+    })
 
     try {
-      const result = await fn()
+      const result = await Promise.race([fn(), timeoutPromise])
       this.recordSuccess()
       return result
     } catch (error) {
       this.recordFailure(error as Error)
+      // 超时错误保持原始类型向上传播，便于调用方识别并按超时策略处置。
+      if (error instanceof PluginTimeoutError) throw error
       throw this.rethrowSafe(error as Error)
     } finally {
       clearTimeout(this.timeoutHandle)

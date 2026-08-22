@@ -4,7 +4,7 @@
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -44,17 +44,18 @@ describe('storage root resolution', () => {
     expect(persistence.storagePath).toBe(explicit)
   })
 
-  it('falls back to DSH_BRANCH_HOME when set to a non-blank value', () => {
+  it('resolves DSH_BRANCH_HOME ahead of the homedir default (env override)', () => {
     const branchHome = join(tmpdir(), 'branch-home')
     process.env[DSH_BRANCH_HOME_ENV] = branchHome
     const persistence = new PluginPersistence(deadRegistry)
     expect(persistence.storagePath).toBe(resolve(branchHome))
   })
 
-  it('ignores blank env values and defaults to cwd/deepseek-harness-branchDSH', () => {
+  it('ignores blank env values and defaults to ~/.dsh-dsh under the user home', () => {
     process.env[DSH_BRANCH_HOME_ENV] = '   '
     const persistence = createDefaultPersistence(deadRegistry)
-    expect(persistence.storagePath).toBe(resolve(process.cwd(), DSH_BRANCH_DIR_NAME))
+    expect(persistence.storagePath).toBe(join(homedir(), DSH_BRANCH_DIR_NAME))
+    expect(DSH_BRANCH_DIR_NAME).toBe('.dsh-dsh')
   })
 })
 
