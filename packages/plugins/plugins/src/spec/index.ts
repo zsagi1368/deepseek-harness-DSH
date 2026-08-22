@@ -363,15 +363,33 @@ export interface ExecResult {
  *
  * 插件通过此上下文访问 DSH 核心能力。
  */
-/** Approval request payload */
+/** Approval request payload（对齐官方 @deepseek-ai/dsh-user-approval 的 ApprovalRequest 形状） */
 export interface ApprovalRequest {
   agent: { session?: { events?: unknown[] } }
   toolName: string
   reason: string
+  /** 官方字段：关联已流式展示的工具调用，便于 UI 挂载提示 */
+  callId?: string
+  /** 官方字段：中止即撤回问题，请求立刻落为 'cancelled' */
+  signal?: AbortSignal
 }
 
-/** Approval outcome */
-export type ApprovalOutcome = 'allowed-once' | 'rejected' | 'allowed-always' | 'rejected-always'
+/**
+ * Approval outcome。
+ *
+ * 前四个为本地词表；'cancelled'/'unavailable' 来自官方
+ * @deepseek-ai/dsh-user-approval，桥接时必须 fail closed（视为拒绝），
+ * 只有 'allowed-*' 是授权。
+ */
+export type ApprovalOutcome =
+  | 'allowed-once'
+  | 'rejected'
+  | 'allowed-always'
+  | 'rejected-always'
+  /** 官方词表：请求被中止撤回 */
+  | 'cancelled'
+  /** 官方词表：无可用 answerer，缺省拒绝 */
+  | 'unavailable'
 
 /** Approval service */
 export interface ApprovalService {

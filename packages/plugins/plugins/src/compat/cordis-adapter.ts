@@ -48,6 +48,40 @@ function readCordisStatics(service: CordisService): CordisStatics {
 }
 
 /**
+ * 官方 @deepseek-ai/dsh-user-approval 的线安全结果词表。
+ *
+ * 与 packages/interaction/user-approval 的 types.ts 对齐：
+ * 只有 'allowed-once' 是授权；'rejected'/'cancelled'/'unavailable' 一律视为拒绝。
+ * 'cancelled'/'unavailable' 必须显式 fail closed，不得降级为放行。
+ */
+export type OfficialApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+
+/**
+ * 判定审批结果是否为授权（桥接两种词表）：
+ * - 官方 @deepseek-ai/dsh-user-approval：仅 'allowed-once' 授权；
+ *   'cancelled'/'unavailable' 必须 fail closed。
+ * - 本地 spec ApprovalOutcome：额外接受 'allowed-always'。
+ */
+export function isApprovalGranted(outcome: string): boolean {
+  return outcome === 'allowed-once' || outcome === 'allowed-always'
+}
+
+/**
+ * 规范化 Cordis 插件 ID（P0#2：npm scoped 包名 → namespace/name）
+ *
+ * 官方插件以 npm 包名作为身份（loader EntryOptions.name，
+ * 如 '@deepseek-ai/dsh-persona'），而 PluginSpec 要求 namespace/name。
+ * 规则：
+ * - '@scope/name' → 'scope/name'（与 spec 的 normalizePluginId 对齐）
+ * - 其余形式原样返回（已是 namespace/name 或裸名）
+ */
+export function normalizeCordisPluginId(id: string): string {
+  const trimmed = id.trim()
+  if (!trimmed.startsWith('@')) return trimmed
+  return trimmed.slice(1)
+}
+
+/**
  * 默认沙箱配置 - 安全默认值，需要显式授权
  * 安全修复：默认禁用完全授权，要求显式认证
  */
@@ -92,6 +126,10 @@ export class CordisPluginWrapper implements Plugin {
   readonly manifest: PluginManifest
   private readonly service: CordisService
   private readonly logger: PluginLogger
+  /** 官方 user-approval 透传：关联的工具调用 ID */
+  private readonly approvalCallId: string | undefined
+  /** 官方 user-approval 透传：撤回审批问题的中止信号 */
+  private readonly approvalSignal: AbortSignal | undefined
   private _status: PluginStatus = PluginStatus.ACTIVE
 
   constructor(
@@ -104,15 +142,23 @@ export class CordisPluginWrapper implements Plugin {
       config?: Record<string, unknown> | undefined
       /** 是否完全授权（默认 true，与 core 一致） */
       fullyAuthorized?: boolean | undefined
+      /** 官方 user-approval 字段：关联已流式展示的工具调用 */
+      callId?: string | undefined
+      /** 官方 user-approval 字段：中止即撤回审批问题 */
+      signal?: AbortSignal | undefined
     },
     context: PluginContext,
   ) {
     this.service = service
     this.logger = context.logger
+    this.approvalCallId = cordisConfig.callId
+    this.approvalSignal = cordisConfig.signal
 
     // 从 Cordis 配置生成 PluginManifest
+    // ID 先做 npm scoped → namespace/name 规范化，保证注册表键与
+    // manifest.id 一致（否则 getHealthReport 等按 manifest.id 查询会错位）。
     this.manifest = {
-      id: cordisConfig.id,
+      id: normalizeCordisPluginId(cordisConfig.id),
       version: cordisConfig.version || '1.0.0',
       name: cordisConfig.name,
       ...(cordisConfig.description ? { description: cordisConfig.description } : {}),
@@ -240,15 +286,24 @@ export class CordisPluginWrapper implements Plugin {
     const agent = ctx.agent ?? { session: { events: [] } }
 
     try {
-      // 调用官方的 approval.request()
+      // 调用官方的 approval.request()；payload 对齐官方 ApprovalRequest 形状
+      // （agent/toolName 必填，reason 说明缘由，callId/signal 可选透传）。
       const outcome = await approval.request({
         agent,
         toolName: `plugin:${this.manifest.id}`,
         reason: `Plugin ${this.manifest.id} requires permissions`,
+        ...(this.approvalCallId !== undefined ? { callId: this.approvalCallId } : {}),
+        ...(this.approvalSignal !== undefined ? { signal: this.approvalSignal } : {}),
       })
 
-      // 返回结果
-      return outcome === 'allowed-once' || outcome === 'allowed-always'
+      // 官方词表中 'cancelled'/'unavailable' 必须 fail closed；
+      // 本地词表的 'allowed-always' 也视为授权（见 isApprovalGranted）。
+      if (outcome === 'cancelled' || outcome === 'unavailable') {
+        this.logger.warn(
+          `Approval for ${this.manifest.id} settled as '${outcome}', failing closed`,
+        )
+      }
+      return isApprovalGranted(outcome)
     } catch (error) {
       this.logger.error(`Approval request failed for ${this.manifest.id}: ${String(error)}`)
       return false

@@ -7,12 +7,15 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   CordisPluginWrapper,
   createCordisAdapter,
+  isApprovalGranted,
   isCordisPlugin,
+  normalizeCordisPluginId,
   wrapCordisPlugin,
   type CordisService,
 } from '../src/compat/cordis-adapter.ts'
 import { PluginStatus } from '../src/spec/index.ts'
 import { mockContext } from './fixtures.ts'
+import { DefaultPluginRegistry } from '../src/registry/registry.ts'
 import type { PluginContext } from '../src/spec/index.ts'
 
 class OfficialService implements CordisService {
@@ -316,5 +319,160 @@ describe('cordis helpers', () => {
     const plugin = adapter.wrap(new OfficialService())
     expect(plugin.manifest.id).toBe('official-service')
     expect(adapter.isCordis(new OfficialService())).toBe(true)
+  })
+})
+
+describe('ID normalization (npm scoped -> namespace/name)', () => {
+  it('strips the npm scope marker, matching spec normalizePluginId', () => {
+    expect(normalizeCordisPluginId('@deepseek-ai/dsh-persona')).toBe('deepseek-ai/dsh-persona')
+    expect(normalizeCordisPluginId('@scope/name')).toBe('scope/name')
+    // Already-namespaced and bare ids pass through untouched.
+    expect(normalizeCordisPluginId('org/plugin')).toBe('org/plugin')
+    expect(normalizeCordisPluginId('bare-name')).toBe('bare-name')
+    expect(normalizeCordisPluginId('  @a/b  ')).toBe('a/b')
+  })
+
+  it('normalizes manifest ids so registry keys match manifest.id', () => {
+    const wrapper = new CordisPluginWrapper(
+      new OfficialService(),
+      { id: '@deepseek-ai/dsh-agent-instructions', name: 'Instructions' },
+      mockContext(),
+    )
+    expect(wrapper.manifest.id).toBe('deepseek-ai/dsh-agent-instructions')
+
+    const viaOptions = wrapCordisPlugin(new OfficialService(), mockContext(), {
+      id: '@deepseek-ai/dsh-llm',
+    })
+    expect(viaOptions.manifest.id).toBe('deepseek-ai/dsh-llm')
+  })
+})
+
+describe('official dsh-user-approval vocabulary bridge', () => {
+  it('grants only allowed-* outcomes', () => {
+    expect(isApprovalGranted('allowed-once')).toBe(true)
+    expect(isApprovalGranted('allowed-always')).toBe(true)
+    for (const denied of ['rejected', 'rejected-always', 'cancelled', 'unavailable']) {
+      expect(isApprovalGranted(denied), denied).toBe(false)
+    }
+  })
+
+  it.each(['cancelled', 'unavailable'] as const)(
+    'fails closed when official approval settles as %s',
+    async (outcome) => {
+      const service = new OfficialService()
+      const request = vi.fn(async () => outcome)
+      const context = mockContext()
+      context.approval = { request }
+
+      const wrapper = new CordisPluginWrapper(service, { id: 'o/bridge', name: 'B' }, context)
+      await expect(wrapper.install(context)).rejects.toThrow(/rejected by user/)
+      expect(service.started).toBe(false)
+      expect(wrapper.status).toBe(PluginStatus.ERROR)
+      expect(request).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('forwards official callId/signal fields on the approval payload', async () => {
+    const service = new OfficialService()
+    const request = vi.fn(async () => 'allowed-once' as const)
+    const controller = new AbortController()
+    const context = mockContext()
+    context.approval = { request }
+
+    const wrapper = new CordisPluginWrapper(
+      service,
+      { id: 'o/call', name: 'C', callId: 'call_123', signal: controller.signal },
+      context,
+    )
+    await wrapper.install(context)
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: 'call_123', signal: controller.signal }),
+    )
+    expect(service.started).toBe(true)
+  })
+})
+
+describe('minimal loader entry chain (wrap -> register -> start/stop -> health)', () => {
+  /**
+   * 最小 Cordis entry 对象，形状对齐 vendor/loader 的 EntryOptions
+   * `{ id, name, config }`（name 为官方 npm scoped 包名）。
+   */
+  function minimalEntry() {
+    return {
+      id: 'persona',
+      name: '@deepseek-ai/dsh-persona',
+      config: { text: 'hello from cordis' },
+    }
+  }
+
+  it('adapts a loader entry end-to-end through the governance registry', async () => {
+    const entry = minimalEntry()
+    const service = new OfficialService()
+
+    // 1. 包装：npm scoped 包名规范化为 namespace/name。
+    const wrapped = wrapCordisPlugin(service, mockContext(), {
+      id: normalizeCordisPluginId(entry.name),
+      name: 'Persona',
+      version: '0.1.1',
+    })
+    expect(wrapped.manifest.id).toBe('deepseek-ai/dsh-persona')
+    expect(wrapped.manifest.sandbox.process.fullyAuthorized).toBe(false)
+
+    // 2. 注册：registry.install 走无 approval 服务的降级路径（自动放行）并启动服务。
+    const registry = new DefaultPluginRegistry()
+    const result = await registry.register(wrapped)
+    expect(result.success).toBe(true)
+    expect(result.pluginId).toBe('deepseek-ai/dsh-persona')
+    expect(registry.getStatus('deepseek-ai/dsh-persona')).toBe(PluginStatus.ACTIVE)
+    expect(service.started).toBe(true)
+    // 注册表上下文的空 config 以对象形式转发给 cordis start。
+    expect(service.started).toBe(true)
+
+    // 3. 健康检查：注册表报告与插件自身委托都可用且健康。
+    const report = registry.getHealthReport()
+    expect(report.total).toBe(1)
+    expect(report.active).toBe(1)
+    expect(report.errors).toBe(0)
+    const row = report.plugins.find(p => p.id === 'deepseek-ai/dsh-persona')
+    // 规范化保证 manifest.id 与注册表键一致，报告不会错位成 error。
+    expect(row?.status).toBe(PluginStatus.ACTIVE)
+    expect(wrapped.getHealthStatus?.()).toMatchObject({ healthy: true })
+
+    // 4. 启停：卸载触发 cordis stop，条目从注册表移除，可重新注册。
+    await registry.unregister('deepseek-ai/dsh-persona')
+    expect(service.stopped).toBe(true)
+    expect(registry.getAll()).toHaveLength(0)
+
+    const reRegistered = await registry.register(
+      wrapCordisPlugin(new OfficialService(), mockContext(), {
+        id: normalizeCordisPluginId(entry.name),
+        name: 'Persona',
+      }),
+    )
+    expect(reRegistered.success).toBe(true)
+    expect(reRegistered.pluginId).toBe('deepseek-ai/dsh-persona')
+  })
+
+  it('rejects a duplicate registration of the same normalized id', async () => {
+    const entry = minimalEntry()
+    const first = new OfficialService()
+    const second = new OfficialService()
+    const id = normalizeCordisPluginId(entry.name)
+
+    const registry = new DefaultPluginRegistry()
+    const firstResult = await registry.register(
+      wrapCordisPlugin(first, mockContext(), { id, name: 'Persona' }),
+    )
+    expect(firstResult.success).toBe(true)
+
+    const secondResult = await registry.register(
+      wrapCordisPlugin(second, mockContext(), { id, name: 'Persona Clone' }),
+    )
+    expect(secondResult.success).toBe(false)
+    expect(secondResult.errors?.[0]?.message).toBe('Plugin already registered')
+    // 第二个实例未被启动，注册表仍只有第一个条目。
+    expect(second.started).toBe(false)
+    expect(registry.getAll()).toHaveLength(1)
+    expect(registry.getHealthReport().errors).toBe(0)
   })
 })
