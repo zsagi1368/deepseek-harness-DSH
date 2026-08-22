@@ -181,6 +181,9 @@ export default defineConfig({
         'packages/*/*/src/types.ts',
         'packages/*/*/src/bin.ts',
         'packages/*/*/src/worker.ts',
+        // Pure re-export barrels: no executable statements of their own.
+        'packages/plugins/plugins/src/index.ts',
+        'packages/plugins/plugins/src/persistence/index.ts',
         // Dynamic Host/Client composition is covered by its focused lifecycle
         // tests and assembled application checks rather than per-file coverage.
         'packages/self-modification/*/src/**/*.{ts,tsx}',
