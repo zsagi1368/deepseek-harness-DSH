@@ -100,6 +100,10 @@
     - id: plugin-inventory
       name: '@deepseek-ai/dsh-host-plugin-inventory'
 
+    # Governance roster/lifecycle/health/admission/preset Remotes for trusted clients.
+    - id: plugin-governance
+      name: '@deepseek-ai/dsh-plugin-governance-host'
+
     # The API gateway: the transport-agnostic dispatch face every client shape
     # shares. The base layer's agent-default-model service owns the default model.
     - id: api-gateway
